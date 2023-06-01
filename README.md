@@ -1,17 +1,17 @@
-# Stock-GPT
+# 📈 Stock-GPT
 
 This script utilizes the GPT-4 model from OpenAI to analyze stock market data from CNBC and make buy, sell, or hold decisions based on the current portfolio. The analysis is executed using OpenAI's API and the Alpaca Trading API for handling stock transactions.
 
-## Features
+## 🚀 Features
 
-- Scrape latest financial news articles from CNBC
-- Extract relevant stock data from the articles
-- Analyze stocks using OpenAI's GPT model
-- Make buy, sell, or hold decisions
-- Execute the decisions using Alpaca Trading API
-- Analyze the current portfolio
+- 📰 Scrape latest financial news articles from CNBC
+- 📊 Extract relevant stock data from the articles
+- 🧠 Analyze stocks using OpenAI's GPT model
+- 💡 Make buy, sell, or hold decisions
+- 💸 Execute the decisions using Alpaca Trading API
+- 📝 Analyze the current portfolio
 
-## Requirements
+## 📋 Requirements
 
 - Python 3
 - `requests` library
@@ -29,7 +29,7 @@ This script utilizes the GPT-4 model from OpenAI to analyze stock market data fr
   - Alpaca Trading API key
   - Alpaca Trading Secret key
 
-## Usage
+## 🎬 Usage
 
 1. Set your OpenAI API key, Alpaca API key, and Alpaca Secret key in the environment variable or provide them directly in the script.
 2. Create a `StockAnalyzer` instance with your API keys:
@@ -44,7 +44,7 @@ stock_analyzer = StockAnalyzer(OPENAI_API_KEY, ALPACA_API_KEY, ALPACA_SECRET_KEY
 stock_analyzer.run()
 ```
 
-## Methods
+## 🛠 Methods
 
 ### get_account_info()
 
@@ -76,4 +76,4 @@ Analyze the current portfolio and update the daily transactions.
 
 ### run()
 
-Run the complete stock analysis process. 
+Run the complete stock analysis process.
