@@ -1,0 +1,7 @@
+requests
+bs4
+pandas
+ycnbc
+openai
+alpaca-py
+pytz
