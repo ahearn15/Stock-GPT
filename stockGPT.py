@@ -11,8 +11,11 @@ import re
 import pytz
 from datetime import datetime, time
 import numpy as np
+from selenium import webdriver
+from fake_useragent import UserAgent
 
 import config
+
 
 class StockAnalyzer:
     def __init__(self, openai_api_key, alpaca_api_key, alpaca_secret_key):
@@ -28,6 +31,20 @@ class StockAnalyzer:
         self.buying_power, self.current_holdings, self.current_portfolio, self.all_positions = self.get_account_info()
         self.current_date = datetime.now().strftime("%Y/%m/%d")
         self.failed_articles = []
+
+        with open('daily.txt') as f:
+            file_date = f.read()
+
+        if file_date == self.current_date:
+            self.new_day = False
+            try:
+                self.daily_transactions = pd.read_csv('daily_transactions.csv')
+            except:
+                self.daily_transactions = pd.DataFrame()
+        else:
+            self.new_day = True
+            self.daily_transactions = pd.DataFrame()
+
         try:
             scraped_df = pd.read_csv('scraped.csv')
             scraped_df = scraped_df[scraped_df['0'].str.contains(self.current_date)]
@@ -74,7 +91,7 @@ class StockAnalyzer:
             r = requests.get(article_link)
             article = r.text
             soup = BeautifulSoup(article, "html.parser")
-            stock_links = []
+            stocks = []
             try:
                 art = soup.find("div", {"class": "ArticleBody-articleBody"})
                 art = art.find("div", {"class": "group"})
@@ -88,7 +105,7 @@ class StockAnalyzer:
                     js = json.loads(js)
                     relevant_stocks = [i['symbol'] for i in js]
                     for stock in relevant_stocks:
-                        stock_links.append('https://www.cnbc.com/quotes/' + stock + '/')
+                        stocks.append(stock)
                 else:
                     print(article_link)
                     article_text = art.text
@@ -96,60 +113,138 @@ class StockAnalyzer:
                     if relevant_stocks is not None:
                         relevant_stocks = relevant_stocks.find_all('a')
                         for a in relevant_stocks:
-                            stock_links.append('https://www.cnbc.com' + a['href'] + '/')
+                            quo = a['href'].replace('/quotes/', '').replace('/', '')
+                            stocks.append(quo)
                     for sp in soup.find_all('span', {'data-test': 'QuoteInBody'}):
                         quo = sp.find('a', href=True)['href']
-                        stock_links.append("https://www.cnbc.com" + quo)
+                        quo = quo.replace('/quotes/', '').replace('/', '')
+                        stocks.append(quo)
 
-                stock_links = [*set(stock_links)]
-                if not stock_links == []:
+                stocks = [None if stock in ('ETH.CM=', 'BTC.CM=') else stock for stock in stocks]
+                stocks = [stock for stock in stocks if stock is not None]
+                if not stocks == []:
+                    # replace indices with SPY if it references index
+                    stocks = ['SPY' if stock.startswith('.') else stock for stock in stocks]
+                    stocks = ['VIX' if stock == '@VX.1' else stock for stock in stocks]
+                    stocks = ['WTI' if stock == '@CL.1' else stock for stock in stocks]
+
+                    stocks = [*set(stocks)]
+                    print(stocks)
                     mast_data = pd.DataFrame()
-                    mast_data = self.extract_stock_data(stock_links)
-                    query = mast_data.to_csv()
-                    query += '\n\n' + article_text
-                    queries.append(query)
-                    article_keys.append(article_link)
+                    stock_data = self.extract_stock_data(stocks)
+                    stock_data = stock_data.reset_index().drop_duplicates(subset=['stock'])
+                    stock_data = stock_data.set_index('stock')
+                    for i in range(0, stock_data.shape[0]):
+                        query = (stock_data.iloc[i:i + 1].to_csv())
+                        query += '\n' + article_text
+                        queries.append(query)
+                        article_keys.append(article_link)
+
                 else:
-                    self.scraped.append(article_link) # no stocks to scrape
+                    self.scraped.append(article_link)  # no stocks to scrape
 
             except Exception as e:
                 print(f"Error occurred in {article_link}: {e}")
                 if ((str(e) == "'NoneType' object has no attribute 'find'") |
-                    (str(e) == "'symbol'")):
-                    self.scraped.append(article_link) # Unscrapable
+                        (str(e) == "'symbol'")):
+                    self.scraped.append(article_link)  # Unscrapable
                 else:
                     self.failed_articles.append(article_link)
 
         return queries, article_keys
 
-    def extract_stock_data(self, stock_links):
+    def extract_stock_data(self, stocks):
         """
         Extract stock data from given stock links and concatenate to a DataFrame.
         """
-        mast_data = pd.DataFrame()
-        for link in stock_links:
-            r_stock = requests.get(link)
-            stock_soup = BeautifulSoup(r_stock.text, "html.parser")
-            curr_price = stock_soup.find("span", {"class": "QuoteStrip-lastPrice"}).text
-            txt = stock_soup.find("div", {"class": "QuoteStrip-lastPriceStripContainer"}).text
-            daily_change = re.findall(r"\((.*?)\)", txt)[0]
 
-            stats_ml, vals_ml = ["Current Price", "Daily Change"], [curr_price, daily_change]
+        def get_cnbc_data(stocks):
+            stock_links = ["https://www.cnbc.com/quotes/" + stock for stock in stocks]
+            mast_data = pd.DataFrame()
+            for link in stock_links:
+                r_stock = requests.get(link)
+                stock_soup = BeautifulSoup(r_stock.text, "html.parser")
+                curr_price = stock_soup.find("span", {"class": "QuoteStrip-lastPrice"}).text
+                txt = stock_soup.find("div", {"class": "QuoteStrip-lastPriceStripContainer"}).text
+                daily_change = re.findall(r"\((.*?)\)", txt)[0]
 
-            for subsection in stock_soup.find_all("div", {"class": "Summary-subsection"}):
-                stats = subsection.find_all("span", {"class": "Summary-label"})
-                vals = subsection.find_all("span", {"class": "Summary-value"})
-                for i in range(0, len(stats)):
-                    stats_ml.append(stats[i].text)
-                    vals_ml.append(vals[i].text)
+                stats_ml, vals_ml = ["Current Price", "Daily Change"], [curr_price, daily_change]
 
-            stock_data = pd.DataFrame(vals_ml).T
-            stock_data.columns = stats_ml
-            stock_data["stock"] = link.replace("https://www.cnbc.com/quotes/", "").replace('/', '')
-            stock_data = stock_data.set_index("stock")
-            mast_data = pd.concat([mast_data, stock_data])
+                for subsection in stock_soup.find_all("div", {"class": "Summary-subsection"}):
+                    stats = subsection.find_all("span", {"class": "Summary-label"})
+                    vals = subsection.find_all("span", {"class": "Summary-value"})
+                    for i in range(0, len(stats)):
+                        stats_ml.append(stats[i].text)
+                        vals_ml.append(vals[i].text)
 
-        return mast_data
+                stock_data = pd.DataFrame(vals_ml).T
+                stock_data.columns = stats_ml
+                stock_data["stock"] = link.replace("https://www.cnbc.com/quotes/", "").replace('/', '')
+                stock_data = stock_data.set_index("stock")
+                mast_data = pd.concat([mast_data, stock_data])
+            return mast_data
+
+        def get_tech_data(stocks):
+            op = webdriver.ChromeOptions()
+            op.add_argument('headless')
+            ua = UserAgent()
+
+            driver = webdriver.Chrome('/Users/ahearn/Downloads/chromedriver_mac_arm64/chromedriver', options=op)
+            mast_df = pd.DataFrame()
+
+            for ticker in stocks:
+                url = f'http://tradingview.com/symbols/{ticker}/technicals/'
+                # print(url)
+                driver.get(url)
+                html = driver.page_source
+                soup = BeautifulSoup(html, "html.parser")
+                tabs = soup.find_all('table')
+
+                stock_df = pd.DataFrame()
+                for table in tabs:
+                    headers = [header.text for header in table.find_all("th")]
+
+                    # Get table rows
+                    rows = []
+                    for row in table.find_all("tr")[1:]:
+                        data = [cell.text for cell in row.find_all("td")]
+                        rows.append(data)
+
+                    df = pd.DataFrame(rows, columns=headers)
+
+                    # Create dataframe
+                    if 'Pivot' in df.columns:
+                        df = df.melt(id_vars=['Pivot'], var_name='Method', value_name='Value', col_level=0)
+                        df['Name'] = df['Pivot'] + ' ' + df['Method']
+
+                    df = df[['Name', 'Value']].set_index('Name')
+                    stock_df = pd.concat([stock_df, df])
+
+                stock_df = stock_df.T
+                stock_df['stock'] = ticker
+                mast_df = pd.concat([mast_df, stock_df])
+            driver.quit()
+            mast_df = mast_df.rename_axis(None, axis=1).set_index('stock')
+            return mast_df
+
+        ## ToDo: Yahoo Finance Balance Sheet Scraper (https://finance.yahoo.com/quote/FWONA/cash-flow?p=FWONA)
+        # def get_balance_data(stocks):
+
+        ## ToDo: Get market indicators
+        # def get_market_indicators()
+        # GDP Growth Rate
+        # Interest Rate
+        # Inflation Rate
+        # Unemployment Rate
+        # Government Debt to GDP
+        # Balance of Trade
+        # Current Account to GDP
+        # Credit Rating
+
+        cnbc = get_cnbc_data(stocks)
+        tv = get_tech_data(stocks)
+        stock_data = pd.concat([tv, cnbc], axis=1)
+        return stock_data
 
     def analyze_stocks(self, queries, article_keys):
         """
@@ -160,8 +255,8 @@ class StockAnalyzer:
         for query in queries:
             print(f'Analyzing {article_keys[i]}')
             prompt = (
-                    f"I have ${self.buying_power} in buying power. For each stock in the json data below, tell me if "
-                    f"I should buy, sell, or hold."
+                    f"I have ${self.buying_power * 100} in buying power. For the stock in the json data below, tell me "
+                    f"if I should buy, sell, or hold."
                     "If BUY, list how many shares you would buy (AMOUNT) considering my buying power."
                     "If SELL, list how many shares (AMOUNT) you would sell considering my buying power. "
                     "Respond in json format with zero whitespace, including the following keys: "
@@ -178,9 +273,9 @@ class StockAnalyzer:
                         {
                             "role": "system",
                             "content": "You are both a qualitative and quantitative stock market expert who's only "
-                                       "goal in life is to beat the market and make money, channeling Warren Buffet's "
-                                       "investment strategy of finding undervalued stocks. You are to provide stock "
-                                       "market recommendations based on the data and context provided",
+                                       "goal in life is to beat the market and make money using day trading strategies "
+                                       "and maximizing short-term gain. You are to provide stock market recommendations"
+                                       " based on the data and context provided",
                         },
                         {"role": "user", "content": prompt},
                     ],
@@ -240,12 +335,14 @@ class StockAnalyzer:
         mast_df['ACTION'] = mast_df['ACTION'].str.upper()
         mast_df.to_csv('mast_df.csv', index=False)
 
-        mast_df = mast_df[mast_df['ACTION'] != 'HOLD']
-        mast_df["AMOUNT"] = pd.to_numeric(mast_df["AMOUNT"], errors="coerce") / self.buying_power * 10
+        # mast_df = mast_df[mast_df['ACTION'] == 'HOLD']
+        if 'AMOUNT' in mast_df.columns:
+            mast_df["AMOUNT"] = pd.to_numeric(mast_df["AMOUNT"], errors="coerce") / (self.buying_power * 100) * 10
 
         # mast_df = mast_df.drop_duplicates(subset=["STOCK"], keep=False)
         mast_df = mast_df[~mast_df["STOCK"].str.contains("=")]
         mast_df["STOCK"] = mast_df["STOCK"].str.strip()
+
         return mast_df, article_keys
 
     def execute_decisions(self, mast_df, article_keys=None):
@@ -271,20 +368,28 @@ class StockAnalyzer:
             else:
                 return True
 
-        mast_df.to_csv('mast_df.csv', index = False)
         ext_hours = is_extended_hours()
+        if 'ACTION' in self.daily_transactions.columns:
+            daily_buys = list(self.daily_transactions[self.daily_transactions['ACTION'] == 'BUY']['STOCK'])
+        else:
+            daily_buys = []
+
         if 'AMOUNT' not in mast_df.columns:
-            mast_df['AMOUNT'] = mast_df['Qty']
+            mast_df['AMOUNT'] = pd.to_numeric(mast_df['Qty'])
         for index, row in mast_df.iterrows():
             break_loop = False
             if row["ACTION"] == "BUY":
                 side_ = OrderSide.BUY
-                print(
-                    f'PLACING ORDER BUY {round(row["AMOUNT"], 2)} SHARES OF {row["STOCK"]}')
-            elif row["ACTION"] == "SELL" and row["STOCK"] in self.current_holdings:
+                print(f'PLACING ORDER BUY {row["STOCK"]}')
+            elif ((row["ACTION"] == "SELL") and (row["STOCK"] in self.current_holdings) and
+                  (row['STOCK'] not in daily_buys)):
                 side_ = OrderSide.SELL
-                print(
-                    f'PLACING ORDER TO SELL {round(row["AMOUNT"], 2)} SHARES OF {row["STOCK"]}')
+                print(f'PLACING ORDER SELL $10 {row["STOCK"]}')
+
+            elif row["ACTION"] == "HOLD" and row["STOCK"] in self.current_holdings:
+                self.scraped.append(row['ARTICLE_SOURCE'])
+                break_loop = True
+
             else:
                 self.scraped.append(row['ARTICLE_SOURCE'])
                 side_ = False
@@ -294,19 +399,22 @@ class StockAnalyzer:
                 self.scraped.append(row['ARTICLE_SOURCE'])
 
                 try:
-                    ## ToDo: make qty/notional >= $1
-                    limit_order_data = MarketOrderRequest(
+                    ## ToDo: make qty/notional >= $1. Need to get current price
+
+                    market_order_data = MarketOrderRequest(
                         symbol=row["STOCK"],
-                        qty=row["AMOUNT"],
+                        notional=50,
                         side=side_,
-                        extended_hours=ext_hours,
                         time_in_force=TimeInForce.DAY)
 
-                    # Place limit order
-                    limit_order = self.client.submit_order(order_data=limit_order_data)
-
+                    # Place market order
+                    self.client.submit_order(order_data=market_order_data)
+                    self.daily_transactions = pd.concat([self.daily_transactions, pd.DataFrame(row).T])
                 except Exception as e:
                     print(f"Order failed: {e}")
+
+
+        #self.daily_transactions.to_csv('daily_transactions.csv', index=False)
 
     def analyze_current_portfolio(self):
 
@@ -314,10 +422,11 @@ class StockAnalyzer:
             pos_df = pd.DataFrame()
             for pos in self.all_positions:
                 pos_df = pd.concat([pos_df, pd.DataFrame.from_dict(pos).set_index(0).T])
+
             pos_df = pos_df[['symbol', 'avg_entry_price', 'qty', 'market_value']]
 
-            pos_df['qty'] = pd.to_numeric(pos_df['qty'], errors = 'coerce')
-            for col in pos_df.drop(columns=['symbol','qty']).columns:
+            pos_df['qty'] = pd.to_numeric(pos_df['qty'], errors='coerce')
+            for col in pos_df.drop(columns=['symbol', 'qty']).columns:
                 pos_df[col] = round(pd.to_numeric(pos_df[col], errors='coerce'), 2)
 
             pos_df.columns = ['STOCK', 'Avg. Entry Price', 'Qty', 'Market Value']
@@ -343,66 +452,69 @@ class StockAnalyzer:
                         'Debt To Equity (MRQ)', 'ROE (TTM)', 'Gross Margin (TTM)', 'Revenue (TTM)', 'EBITDA (TTM)',
                         'Net Margin (TTM)', 'Dividend Yield']
 
-            mast_stock_data = mast_stock_data[imp_cols].dropna(subset=['Current Price'])
-
+            mast_stock_data = mast_stock_data[imp_cols]
+            mast_stock_data.to_csv('mast_stock_data')
             return mast_stock_data
 
         def gpt_portfolio(my_stock_info):
-            prompt = ('Below is my portfolio. Which of these stocks should be held and which should be sold? '
-                      'Respond in json format with zero whitespace and include the keys "STOCK", "ACTION".'
-                      'Only include the stocks you would sell.\n' + my_stock_info.to_csv()
-                      )
+            queries = []
+            for i in range(0, my_stock_info.shape[0]):
+                query = (my_stock_info.iloc[i:i + 1].to_csv())
+                queries.append(query)
+
             responses = []
-            try:
-                response = openai.ChatCompletion.create(
-                    model="gpt-4",
-                    messages=[
-                        {
-                            "role": "system",
-                            "content": "You are both a qualitative and quantitative stock market expert who's only "
-                                       "goal in life is to beat the market and make money, channeling Warren Buffet's "
-                                       "investment strategy of finding undervalued stocks. You are to provide stock "
-                                       "market recommendations based on the data and context provided",
-                        },
-                        {"role": "user", "content": prompt},
-                    ],
-                    temperature=0,
-                    max_tokens=2048,
-                    top_p=1,
-                    frequency_penalty=0,
-                    presence_penalty=0,
-                )
-                resp = response["choices"][0]["message"]["content"]
+            for query in queries:
+                prompt = ('Below is a stock I own. Should this stock be sold or held?'
+                          'Respond in json format with zero whitespace and include the keys "STOCK", "ACTION".'
+                          '\n' + query
+                          )
+                try:
+                    response = openai.ChatCompletion.create(
+                        model="gpt-4",
+                        messages=[
+                            {
+                                "role": "system",
+                                "content": "You are both a qualitative and quantitative stock market expert who's only "
+                                           "goal in life is to beat the market and make money using day trading strategies "
+                                           "and maximizing short-term gain. You are to provide stock market recommendations"
+                                           " based on the data provided.",
+                            },
+                            {"role": "user", "content": prompt},
+                        ],
+                        temperature=0,
+                        max_tokens=2048,
+                        top_p=1,
+                        frequency_penalty=0,
+                        presence_penalty=0,
+                    )
+                    resp = response["choices"][0]["message"]["content"]
 
-                ### ToDo: parse json and print suggestions
-                print(resp)
-                responses.append(resp)
+                    ### ToDo: parse json and print suggestions
+                    print(resp)
+                    responses.append(resp)
 
-            except Exception as e:
-                print(f'Query failed: {e}')
-            print("Done")
-            return responses
+                except Exception as e:
+                    print(f'Query failed: {e}')
+                print("Done")
+                return responses
 
-        with open('daily.txt') as f:
-            file_date = f.read()
-
-        if file_date == self.current_date:
+        if not self.new_day:
             return
         print('Analyzing current portfolio')
-        current_holdings_links = ["https://www.cnbc.com/quotes/" + stock for stock in self.current_holdings]
-        my_stock_data = self.extract_stock_data(current_holdings_links)
+        my_stock_data = self.extract_stock_data(self.current_holdings)
         my_stock_info = get_holdings_info(my_stock_data)
-        responses = gpt_portfolio(my_stock_info)
-        recs, article_keys = self.process_recommendations(responses)
-        my_stock_info = my_stock_info.reset_index().rename(columns={'index': 'STOCK'})
-        recs = recs.merge(my_stock_info, on='STOCK', how='left')
-        self.execute_decisions(recs)
-        with open('daily.txt', 'w') as f:
-            f.write(self.current_date)
-        print('Done')
+        my_stock_info.to_csv('my_stock_info.csv')
+        # responses = gpt_portfolio(my_stock_info)
+        # recs, article_keys = self.process_recommendations(responses)
+        # my_stock_info = my_stock_info.reset_index().rename(columns={'index': 'STOCK'})
+        # recs = recs.merge(my_stock_info, on='STOCK', how='left')
+        # self.execute_decisions(recs)
+        # with open('daily.txt', 'w') as f:
+        #     f.write(self.current_date)
+        # print('Done')
 
     def run(self):
-        self.analyze_current_portfolio()
+        # self.analyze_current_portfolio()
         queries, article_keys = self.scrape_articles()
 
         if queries:
@@ -415,6 +527,8 @@ class StockAnalyzer:
             pass
         # Update dataframe with successfully scraped transactions
         pd.concat([pd.DataFrame(self.scraped)]).drop_duplicates().to_csv('scraped.csv', index=False)
+        self.daily_transactions.to_csv('daily_transactions.csv')
+
 
 # Load API keys from environment variables or another secure source
 OPENAI_API_KEY = config.OPENAI_API_KEY
