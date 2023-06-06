@@ -13,6 +13,7 @@ from datetime import datetime, time
 import numpy as np
 from selenium import webdriver
 from fake_useragent import UserAgent
+from yahooquery import Ticker
 
 import config
 
@@ -135,8 +136,9 @@ class StockAnalyzer:
                     stock_data = stock_data.reset_index().drop_duplicates(subset=['stock'])
                     stock_data = stock_data.set_index('stock')
                     for i in range(0, stock_data.shape[0]):
-                        query = (stock_data.iloc[i:i + 1].to_csv())
+                        query = (stock_data.iloc[i:i + 1].dropna(axis=1).to_csv())
                         query += '\n' + article_text
+                        print(query)
                         queries.append(query)
                         article_keys.append(article_link)
 
@@ -227,8 +229,16 @@ class StockAnalyzer:
             mast_df = mast_df.rename_axis(None, axis=1).set_index('stock')
             return mast_df
 
-        ## ToDo: Yahoo Finance Balance Sheet Scraper (https://finance.yahoo.com/quote/FWONA/cash-flow?p=FWONA)
-        # def get_balance_data(stocks):
+        def get_yahoo_data(stocks):
+            mast_df = pd.DataFrame()
+            for stock in stocks:
+                stock_df = Ticker(stock)
+                stock_df = stock_df.all_financial_data().tail(1).reset_index().rename(columns={'symbol': 'stock'})
+                stock_df['stock'] = stock_df['stock'].str.upper()
+                stock_df = stock_df.set_index('stock')
+                stock_df = stock_df.dropna(axis=1)
+                mast_df = pd.concat([mast_df, stock_df])
+            return mast_df
 
         ## ToDo: Get market indicators
         # def get_market_indicators()
@@ -243,7 +253,9 @@ class StockAnalyzer:
 
         cnbc = get_cnbc_data(stocks)
         tv = get_tech_data(stocks)
-        stock_data = pd.concat([tv, cnbc], axis=1)
+        yahoo = get_yahoo_data(stocks)
+
+        stock_data = pd.concat([tv, cnbc, yahoo], axis=1)
         return stock_data
 
     def analyze_stocks(self, queries, article_keys):
@@ -257,7 +269,7 @@ class StockAnalyzer:
             prompt = (
                     f"I have ${self.buying_power * 100} in buying power. For the stock in the json data below, tell me "
                     f"if I should buy, sell, or hold."
-                    "If BUY, list how many shares you would buy (AMOUNT) considering my buying power."
+                    "If BUY, list how many shares you would buy (AMOUNT) considering my buying power. "
                     "If SELL, list how many shares (AMOUNT) you would sell considering my buying power. "
                     "Respond in json format with zero whitespace, including the following keys: "
                     "STOCK, ACTION, AMOUNT. Use the stock symbol."
@@ -275,7 +287,8 @@ class StockAnalyzer:
                             "content": "You are both a qualitative and quantitative stock market expert who's only "
                                        "goal in life is to beat the market and make money using day trading strategies "
                                        "and maximizing short-term gain. You are to provide stock market recommendations"
-                                       " based on the data and context provided",
+                                       " based on the data and context provided. Focus primarily on the data, but"
+                                       " incorporate context from the article as needed.",
                         },
                         {"role": "user", "content": prompt},
                     ],
@@ -384,7 +397,7 @@ class StockAnalyzer:
             elif ((row["ACTION"] == "SELL") and (row["STOCK"] in self.current_holdings) and
                   (row['STOCK'] not in daily_buys)):
                 side_ = OrderSide.SELL
-                print(f'PLACING ORDER SELL $10 {row["STOCK"]}')
+                print(f'PLACING ORDER SELL {row["STOCK"]}')
 
             elif row["ACTION"] == "HOLD" and row["STOCK"] in self.current_holdings:
                 self.scraped.append(row['ARTICLE_SOURCE'])
@@ -403,7 +416,7 @@ class StockAnalyzer:
 
                     market_order_data = MarketOrderRequest(
                         symbol=row["STOCK"],
-                        notional=50,
+                        notional=min(50, row['AMOUNT']),
                         side=side_,
                         time_in_force=TimeInForce.DAY)
 
@@ -412,7 +425,6 @@ class StockAnalyzer:
                     self.daily_transactions = pd.concat([self.daily_transactions, pd.DataFrame(row).T])
                 except Exception as e:
                     print(f"Order failed: {e}")
-
 
         #self.daily_transactions.to_csv('daily_transactions.csv', index=False)
 
@@ -504,24 +516,24 @@ class StockAnalyzer:
         my_stock_data = self.extract_stock_data(self.current_holdings)
         my_stock_info = get_holdings_info(my_stock_data)
         my_stock_info.to_csv('my_stock_info.csv')
-        # responses = gpt_portfolio(my_stock_info)
-        # recs, article_keys = self.process_recommendations(responses)
-        # my_stock_info = my_stock_info.reset_index().rename(columns={'index': 'STOCK'})
-        # recs = recs.merge(my_stock_info, on='STOCK', how='left')
-        # self.execute_decisions(recs)
-        # with open('daily.txt', 'w') as f:
-        #     f.write(self.current_date)
-        # print('Done')
+        responses = gpt_portfolio(my_stock_info)
+        recs, article_keys = self.process_recommendations(responses)
+        my_stock_info = my_stock_info.reset_index().rename(columns={'index': 'STOCK'})
+        recs = recs.merge(my_stock_info, on='STOCK', how='left')
+        self.execute_decisions(recs)
+        with open('daily.txt', 'w') as f:
+            f.write(self.current_date)
+        print('Done')
 
     def run(self):
-        # self.analyze_current_portfolio()
+        self.analyze_current_portfolio()
         queries, article_keys = self.scrape_articles()
 
         if queries:
             responses, article_keys = self.analyze_stocks(queries, article_keys)
             recs, article_keys = self.process_recommendations(responses, article_keys)
             self.execute_decisions(recs, article_keys)
-            print('Failed articles:', self.failed_articles)
+            print('Failed articles:', [*set(self.failed_articles)])
         else:
             #print('No new data')
             pass
