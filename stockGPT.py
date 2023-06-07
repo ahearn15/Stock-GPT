@@ -14,6 +14,9 @@ import numpy as np
 from selenium import webdriver
 from fake_useragent import UserAgent
 from yahooquery import Ticker
+import warnings
+
+warnings.simplefilter(action='ignore', category=pd.errors.PerformanceWarning)
 
 import config
 
@@ -83,7 +86,7 @@ class StockAnalyzer:
         Scrape the latest financial news articles from CNBC and extract relevant stock data.
         """
         data = ycnbc.News()
-        latest_ = data.latest()
+        latest_ = data.latest().head()
 
         queries = []
         article_keys = []
@@ -233,11 +236,23 @@ class StockAnalyzer:
             mast_df = pd.DataFrame()
             for stock in stocks:
                 stock_df = Ticker(stock)
-                stock_df = stock_df.all_financial_data().tail(1).reset_index().rename(columns={'symbol': 'stock'})
-                stock_df['stock'] = stock_df['stock'].str.upper()
-                stock_df = stock_df.set_index('stock')
-                stock_df = stock_df.dropna(axis=1)
-                mast_df = pd.concat([mast_df, stock_df])
+                try:
+                    stock_df = stock_df.all_financial_data().tail(1).reset_index().rename(columns={'symbol': 'stock'})
+                    stock_df['stock'] = stock_df['stock'].str.upper()
+                    stock_df = stock_df.set_index('stock')
+                    stock_df = stock_df.dropna(axis=1)
+                    for col in stock_df.columns:
+                        if (abs(pd.to_numeric(stock_df[col], errors='coerce').max() > 1000000) and
+                                (stock_df[col].dtype == 'float64')):
+                            stock_df[col] = stock_df[col] / 1000000
+                            stock_df[col] = stock_df[col].round(3).astype(str) + str('M')
+                        elif (abs(pd.to_numeric(stock_df[col], errors='coerce').max() > 1000) and
+                              (stock_df[col].dtype == 'float64')):
+                            stock_df[col] = stock_df[col] / 1000
+                            stock_df[col] = stock_df[col].round(3).astype(str) + str('K')
+                    mast_df = pd.concat([mast_df, stock_df])
+                except Exception as e:
+                    pass
             return mast_df
 
         ## ToDo: Get market indicators
@@ -256,6 +271,113 @@ class StockAnalyzer:
         yahoo = get_yahoo_data(stocks)
 
         stock_data = pd.concat([tv, cnbc, yahoo], axis=1)
+
+        stock_data['Today Date'] = self.current_date
+        imp_cols = [
+            'stock',
+            'Relative Strength Index (14)',
+            'Stochastic %K (14, 3, 3)',
+            'Commodity Channel Index (20)',
+            'Average Directional Index (14)',
+            'Awesome Oscillator',
+            'Momentum (10)',
+            'MACD Level (12, 26)',
+            'Stochastic RSI Fast (3, 3, 14, 14)',
+            'Williams Percent Range (14)',
+            'Bull Bear Power',
+            'Ultimate Oscillator (7, 14, 28)',
+            'Exponential Moving Average (10)',
+            'Simple Moving Average (10)',
+            'Exponential Moving Average (20)',
+            'Simple Moving Average (20)',
+            'Exponential Moving Average (30)',
+            'Simple Moving Average (30)',
+            'Exponential Moving Average (50)',
+            'Simple Moving Average (50)',
+            'Exponential Moving Average (100)',
+            'Simple Moving Average (100)',
+            'Exponential Moving Average (200)',
+            'Simple Moving Average (200)',
+            'Ichimoku Base Line (9, 26, 52, 26)',
+            'Volume Weighted Moving Average (20)',
+            'Hull Moving Average (9)',
+            'S3 Classic',
+            'S2 Classic',
+            'S1 Classic',
+            'P Classic',
+            'R1 Classic',
+            'R2 Classic',
+            'R3 Classic',
+            'S3 Fibonacci',
+            'S2 Fibonacci',
+            'S1 Fibonacci',
+            'P Fibonacci',
+            'R1 Fibonacci',
+            'R2 Fibonacci',
+            'R3 Fibonacci',
+            'S3 Camarilla',
+            'S2 Camarilla',
+            'S1 Camarilla',
+            'P Camarilla',
+            'R1 Camarilla',
+            'R2 Camarilla',
+            'R3 Camarilla',
+            'S3 Woodie',
+            'S2 Woodie',
+            'S1 Woodie',
+            'P Woodie',
+            'R1 Woodie',
+            'R2 Woodie',
+            'R3 Woodie',
+            'S3 DM',
+            'S2 DM',
+            'S1 DM',
+            'P DM',
+            'R1 DM',
+            'R2 DM',
+            'R3 DM',
+            'Current Price',
+            'Daily Change',
+            'Open',
+            'Day High',
+            'Day Low',
+            'Prev Close',
+            '52 Week High',
+            '52 Week Low',
+            'Market Cap',
+            'Shares Out',
+            '10 Day Average Volume',
+            'Dividend',
+            'Dividend Yield',
+            'Beta',
+            'YTD % Change',
+            'EPS (TTM)',
+            'P/E (TTM)',
+            'Fwd P/E (NTM)',
+            'EBITDA (TTM)',
+            'ROE (TTM)',
+            'Revenue (TTM)',
+            'Gross Margin (TTM)',
+            'Net Margin (TTM)',
+            'Debt To Equity (MRQ)',
+            'Today Date',
+            'Earnings Date',
+            'Ex Div Date',
+            'Div Amount',
+            'Split Date',
+            'Split Factor',
+            'CashAndCashEquivalents',
+            'CurrentAssets',
+            'TotalAssets',
+            'CurrentLiabilities',
+            'TotalLiabilitiesNetMinorityInterest',
+            'TotalEquityGrossMinorityInterest',
+            'OperatingIncome',
+            'GrossProfit',
+            'NetIncome',
+            'CurrentDebt']
+        cols_to_keep = [col for col in stock_data.columns if col in imp_cols]
+        stock_data = stock_data[cols_to_keep]
         return stock_data
 
     def analyze_stocks(self, queries, article_keys):
@@ -264,6 +386,7 @@ class StockAnalyzer:
         """
         responses, article_keys2 = [], []
         i = 0
+        max_retry_attempts = 3
         for query in queries:
             print(f'Analyzing {article_keys[i]}')
             prompt = (
@@ -275,49 +398,54 @@ class StockAnalyzer:
                     "STOCK, ACTION, AMOUNT. Use the stock symbol."
                     "Here is the article and accompanying data from which you should base your decision: \n" + query
             )
-            ## TODO: add boolean response for reasoning
-            ## TODO: associate website link with response
+            retry_count = 0
+            success = False
+            while not success and retry_count < max_retry_attempts:
+                try:
+                    response = openai.ChatCompletion.create(
+                        model="gpt-4",
+                        messages=[
+                            {
+                                "role": "system",
+                                "content": "You are both a qualitative and quantitative stock market expert who's only "
+                                           "goal in life is to beat the market and make money using day trading strategies "
+                                           "and maximizing short-term gain. You are to provide stock market recommendations"
+                                           " based on the data and context provided. Focus primarily on the data, but"
+                                           " incorporate context from the article as needed.",
+                            },
+                            {"role": "user", "content": prompt},
+                        ],
+                        temperature=0,
+                        max_tokens=2000,
+                        top_p=1,
+                        frequency_penalty=0,
+                        presence_penalty=0,
+                    )
+                    resp = response["choices"][0]["message"]["content"]
 
-            try:
-                response = openai.ChatCompletion.create(
-                    model="gpt-4",
-                    messages=[
-                        {
-                            "role": "system",
-                            "content": "You are both a qualitative and quantitative stock market expert who's only "
-                                       "goal in life is to beat the market and make money using day trading strategies "
-                                       "and maximizing short-term gain. You are to provide stock market recommendations"
-                                       " based on the data and context provided. Focus primarily on the data, but"
-                                       " incorporate context from the article as needed.",
-                        },
-                        {"role": "user", "content": prompt},
-                    ],
-                    temperature=0,
-                    max_tokens=2000,
-                    top_p=1,
-                    frequency_penalty=0,
-                    presence_penalty=0,
-                )
-                resp = response["choices"][0]["message"]["content"]
-
-                ### ToDo: parse json and print suggestions
-                print(resp)
-                responses.append(resp)
-                article_keys2.append(article_keys[i])
-            except Exception as e:
-                print(f'Query failed: {e}')
-                self.failed_articles.append(article_keys)
+                    print(resp)
+                    responses.append(resp)
+                    article_keys2.append(article_keys[i])
+                    success = True
+                except Exception as e:
+                    print(f'Query failed: {e}')
+                    retry_count += 1
+                    if retry_count >= max_retry_attempts:
+                        try:
+                            self.failed_articles.append(article_keys)
+                        except:
+                            pass
             i += 1
 
         print("Done")
         return responses, article_keys2
 
-    def process_recommendations(self, responses, article_keys=None):
+    def process_recommendations(self, responses, article_keys=None, portfolio=False):
         """
         Process the GPT model's buy/sell/hold recommendations and return as a DataFrame.
         """
         if article_keys is None:
-            article_keys = [0]
+            article_keys = []
         mast_df = pd.DataFrame()
         i = 0
         for resp in responses:
@@ -337,12 +465,16 @@ class StockAnalyzer:
 
             try:
                 stock_df = pd.DataFrame(json.loads(resp))
-                stock_df['ARTICLE_SOURCE'] = article_keys[i]
+                if not portfolio:
+                    stock_df['ARTICLE_SOURCE'] = article_keys[i]
                 mast_df = pd.concat([mast_df, stock_df])
 
             except Exception as e:
-                print(f"Unable to parse JSON: {resp}")
-                self.failed_articles.append(article_keys[i])
+                print(f"Unable to parse JSON: {resp}, {e}")
+                try:
+                    self.failed_articles.append(article_keys[i])
+                except:
+                    pass
             i += 1
 
         mast_df['ACTION'] = mast_df['ACTION'].str.upper()
@@ -394,11 +526,24 @@ class StockAnalyzer:
             if row["ACTION"] == "BUY":
                 side_ = OrderSide.BUY
                 print(f'PLACING ORDER BUY {row["STOCK"]}')
+                market_order_data = MarketOrderRequest(
+                    symbol=row["STOCK"],
+                    notional=50,
+                    side=side_,
+                    time_in_force=TimeInForce.DAY)
+
             elif ((row["ACTION"] == "SELL") and (row["STOCK"] in self.current_holdings) and
                   (row['STOCK'] not in daily_buys)):
                 side_ = OrderSide.SELL
                 print(f'PLACING ORDER SELL {row["STOCK"]}')
+                d = pd.DataFrame([dict(d) for d in self.client.get_all_positions()])
+                amount = list(d[d['symbol'] == row['STOCK']]['qty'])[0]
 
+                market_order_data = MarketOrderRequest(
+                    symbol=row["STOCK"],
+                    qty=amount,
+                    side=side_,
+                    time_in_force=TimeInForce.DAY)
             elif row["ACTION"] == "HOLD" and row["STOCK"] in self.current_holdings:
                 self.scraped.append(row['ARTICLE_SOURCE'])
                 break_loop = True
@@ -414,19 +559,13 @@ class StockAnalyzer:
                 try:
                     ## ToDo: make qty/notional >= $1. Need to get current price
 
-                    market_order_data = MarketOrderRequest(
-                        symbol=row["STOCK"],
-                        notional=min(50, row['AMOUNT']),
-                        side=side_,
-                        time_in_force=TimeInForce.DAY)
-
                     # Place market order
                     self.client.submit_order(order_data=market_order_data)
                     self.daily_transactions = pd.concat([self.daily_transactions, pd.DataFrame(row).T])
                 except Exception as e:
                     print(f"Order failed: {e}")
 
-        #self.daily_transactions.to_csv('daily_transactions.csv', index=False)
+        # self.daily_transactions.to_csv('daily_transactions.csv', index=False)
 
     def analyze_current_portfolio(self):
 
@@ -438,7 +577,7 @@ class StockAnalyzer:
             pos_df = pos_df[['symbol', 'avg_entry_price', 'qty', 'market_value']]
 
             pos_df['qty'] = pd.to_numeric(pos_df['qty'], errors='coerce')
-            for col in pos_df.drop(columns=['symbol', 'qty']).columns:
+            for col in pos_df.drop(columns=['symbol']).columns:
                 pos_df[col] = round(pd.to_numeric(pos_df[col], errors='coerce'), 2)
 
             pos_df.columns = ['STOCK', 'Avg. Entry Price', 'Qty', 'Market Value']
@@ -457,72 +596,70 @@ class StockAnalyzer:
                                                       '+' + (mast_stock_data['Net P/L (%)'] * 100).round(2).astype(
                                                           str) + '%',
                                                       (mast_stock_data['Net P/L (%)'] * 100).round(2).astype(str) + '%')
-
-            imp_cols = ['Avg. Entry Price', 'Qty', 'Portfolio Diversity', 'Net P/L (%)', 'Current Price',
-                        '52 Week High',
-                        '52 Week Low', 'Market Cap', 'P/E (TTM)', 'Fwd P/E (NTM)', 'EPS (TTM)', 'Beta', 'YTD % Change',
-                        'Debt To Equity (MRQ)', 'ROE (TTM)', 'Gross Margin (TTM)', 'Revenue (TTM)', 'EBITDA (TTM)',
-                        'Net Margin (TTM)', 'Dividend Yield']
-
-            mast_stock_data = mast_stock_data[imp_cols]
-            mast_stock_data.to_csv('mast_stock_data')
+            mast_stock_data = mast_stock_data.sample(mast_stock_data.shape[0])
             return mast_stock_data
 
         def gpt_portfolio(my_stock_info):
             queries = []
             for i in range(0, my_stock_info.shape[0]):
-                query = (my_stock_info.iloc[i:i + 1].to_csv())
+                query = (my_stock_info.iloc[i:i + 1].dropna(axis=1).to_csv())
                 queries.append(query)
 
             responses = []
+            max_retry_attempts = 5
             for query in queries:
-                prompt = ('Below is a stock I own. Should this stock be sold or held?'
+                prompt = ('Below is a stock I own. Based on the data, should this stock be sold or held?'
                           'Respond in json format with zero whitespace and include the keys "STOCK", "ACTION".'
                           '\n' + query
                           )
-                try:
-                    response = openai.ChatCompletion.create(
-                        model="gpt-4",
-                        messages=[
-                            {
-                                "role": "system",
-                                "content": "You are both a qualitative and quantitative stock market expert who's only "
-                                           "goal in life is to beat the market and make money using day trading strategies "
-                                           "and maximizing short-term gain. You are to provide stock market recommendations"
-                                           " based on the data provided.",
-                            },
-                            {"role": "user", "content": prompt},
-                        ],
-                        temperature=0,
-                        max_tokens=2048,
-                        top_p=1,
-                        frequency_penalty=0,
-                        presence_penalty=0,
-                    )
-                    resp = response["choices"][0]["message"]["content"]
+                retry_count = 0
+                success = False
+                while not success and retry_count < max_retry_attempts:
+                    try:
+                        response = openai.ChatCompletion.create(
+                            model="gpt-4",
+                            messages=[
+                                {
+                                    "role": "system",
+                                    "content": "You are both a qualitative and quantitative stock market expert who's only "
+                                               "goal in life is to beat the market and make money using day trading strategies "
+                                               "and maximizing short-term gain. You are to provide stock market recommendations"
+                                               " based on the data provided.",
+                                },
+                                {"role": "user", "content": prompt},
+                            ],
+                            temperature=0,
+                            max_tokens=2048,
+                            top_p=1,
+                            frequency_penalty=0,
+                            presence_penalty=0,
+                        )
+                        resp = response["choices"][0]["message"]["content"]
+                        print(resp)
+                        responses.append(resp)
+                        success = True
+                    except Exception as e:
+                        print(f'Query failed: {e}')
+                        retry_count += 1
 
-                    ### ToDo: parse json and print suggestions
-                    print(resp)
-                    responses.append(resp)
-
-                except Exception as e:
-                    print(f'Query failed: {e}')
-                print("Done")
-                return responses
+            print("Done")
+            return responses
 
         if not self.new_day:
             return
         print('Analyzing current portfolio')
         my_stock_data = self.extract_stock_data(self.current_holdings)
-        my_stock_info = get_holdings_info(my_stock_data)
-        my_stock_info.to_csv('my_stock_info.csv')
+
+        my_stock_info = get_holdings_info(my_stock_data).dropna(subset=['Current Price'])
         responses = gpt_portfolio(my_stock_info)
-        recs, article_keys = self.process_recommendations(responses)
+        recs, article_keys = self.process_recommendations(responses, portfolio=True)
         my_stock_info = my_stock_info.reset_index().rename(columns={'index': 'STOCK'})
         recs = recs.merge(my_stock_info, on='STOCK', how='left')
+        recs.to_csv('recs.csv')
         self.execute_decisions(recs)
         with open('daily.txt', 'w') as f:
             f.write(self.current_date)
+            self.new_day = False
         print('Done')
 
     def run(self):
@@ -533,9 +670,9 @@ class StockAnalyzer:
             responses, article_keys = self.analyze_stocks(queries, article_keys)
             recs, article_keys = self.process_recommendations(responses, article_keys)
             self.execute_decisions(recs, article_keys)
-            print('Failed articles:', [*set(self.failed_articles)])
+            # print('Failed articles:', [*set(self.failed_articles)])
         else:
-            #print('No new data')
+            # print('No new data')
             pass
         # Update dataframe with successfully scraped transactions
         pd.concat([pd.DataFrame(self.scraped)]).drop_duplicates().to_csv('scraped.csv', index=False)
@@ -552,4 +689,7 @@ stock_analyzer = StockAnalyzer(OPENAI_API_KEY, ALPACA_API_KEY, ALPACA_SECRET_KEY
 
 loop = True
 while loop:
-    stock_analyzer.run()
+    try:
+        stock_analyzer.run()
+    except Exception as e:
+        print(f'Error occurred: {e}')

@@ -5,3 +5,4 @@ ycnbc
 openai
 alpaca-py
 pytz
+alpaca_trade_api
