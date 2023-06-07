@@ -43,19 +43,17 @@ class StockAnalyzer:
             self.new_day = False
             try:
                 self.daily_transactions = pd.read_csv('daily_transactions.csv')
-            except:
+                scraped_df = pd.read_csv('scraped.csv').dropna()
+                scraped_df = scraped_df[scraped_df['0'].str.contains(self.current_date)]
+                self.scraped = list(scraped_df['0'])
+                print(self.scraped)
+            except Exception as e:
+                print({e})
                 self.daily_transactions = pd.DataFrame()
+                self.scraped = []
         else:
             self.new_day = True
             self.daily_transactions = pd.DataFrame()
-
-        try:
-            scraped_df = pd.read_csv('scraped.csv')
-            scraped_df = scraped_df[scraped_df['0'].str.contains(self.current_date)]
-            self.scraped = list(scraped_df['0'])
-
-        except Exception as e:
-            self.scraped = []
 
     def get_account_info(self):
         """
@@ -86,7 +84,7 @@ class StockAnalyzer:
         Scrape the latest financial news articles from CNBC and extract relevant stock data.
         """
         data = ycnbc.News()
-        latest_ = data.latest().head()
+        latest_ = data.latest()
 
         queries = []
         article_keys = []
@@ -467,6 +465,8 @@ class StockAnalyzer:
                 stock_df = pd.DataFrame(json.loads(resp))
                 if not portfolio:
                     stock_df['ARTICLE_SOURCE'] = article_keys[i]
+                else:
+                    stock_df['ARTICLE_SOURCE'] = ""
                 mast_df = pd.concat([mast_df, stock_df])
 
             except Exception as e:
@@ -608,7 +608,8 @@ class StockAnalyzer:
             responses = []
             max_retry_attempts = 5
             for query in queries:
-                prompt = ('Below is a stock I own. Based on the data, should this stock be sold or held?'
+                prompt = ('Below is a stock I own. Based on the data, should this stock be sold or held? '
+                          'If you think it will go up in the next 24 hours, HOLD. Otherwise, SELL. '
                           'Respond in json format with zero whitespace and include the keys "STOCK", "ACTION".'
                           '\n' + query
                           )
@@ -648,19 +649,21 @@ class StockAnalyzer:
         if not self.new_day:
             return
         print('Analyzing current portfolio')
-        my_stock_data = self.extract_stock_data(self.current_holdings)
-
+        print("Collecting current portfolio data")
+        #my_stock_data = self.extract_stock_data(self.current_holdings)
         my_stock_info = get_holdings_info(my_stock_data).dropna(subset=['Current Price'])
+        print("Getting recommendations")
         responses = gpt_portfolio(my_stock_info)
         recs, article_keys = self.process_recommendations(responses, portfolio=True)
         my_stock_info = my_stock_info.reset_index().rename(columns={'index': 'STOCK'})
         recs = recs.merge(my_stock_info, on='STOCK', how='left')
         recs.to_csv('recs.csv')
+        print("Processing recommendations")
         self.execute_decisions(recs)
         with open('daily.txt', 'w') as f:
             f.write(self.current_date)
             self.new_day = False
-        print('Done')
+        print('Daily analysis complete')
 
     def run(self):
         self.analyze_current_portfolio()
